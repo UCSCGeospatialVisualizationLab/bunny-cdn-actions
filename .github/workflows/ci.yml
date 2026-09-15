@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  self-check:
+    name: Script self-checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run --self-check on every script
+        run: |
+          set -euo pipefail
+          node sync-geodata/copy.mjs --self-check
+          node sync-geodata/verify.mjs --self-check
+          node upload-storage/upload.mjs --self-check
+          node purge-cdn/purge.mjs --self-check

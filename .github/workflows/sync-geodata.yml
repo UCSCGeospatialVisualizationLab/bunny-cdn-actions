@@ -1,0 +1,112 @@
+name: Sync geodata to Bunny Storage
+
+# Caller owns checkout path filters and secrets: inherit.
+# This workflow extracts CDN_ASSET_S3_OBJECTS from the caller's catalog module
+# (unless catalog-file is set), then runs the sync-geodata composite.
+on:
+  workflow_call:
+    inputs:
+      catalog-module:
+        description: Path to the leaf cdnAssets module in the caller checkout
+        type: string
+        required: false
+        default: src/cdnAssets.ts
+      catalog-export:
+        description: Named export listing S3 object paths
+        type: string
+        required: false
+        default: CDN_ASSET_S3_OBJECTS
+      catalog-file:
+        description: Skip extract; use this catalog file (debug override only)
+        type: string
+        required: false
+        default: ''
+      cdn-host:
+        description: Smoke host for verify (typically vars.APP_URL)
+        type: string
+        required: false
+        default: ''
+      verify:
+        description: Run CDN smoke after copy (ignored on pull_request)
+        type: boolean
+        required: false
+        default: true
+      dry-run:
+        description: Pass --dry-run to copy
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  sync:
+    name: Sync geodata catalog
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'preview' || 'production' }}
+    timeout-minutes: 360
+    steps:
+      - name: Checkout caller
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: inputs.catalog-file == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Extract catalog from module
+        if: inputs.catalog-file == ''
+        id: extract
+        env:
+          CATALOG_MODULE: ${{ inputs.catalog-module }}
+          CATALOG_EXPORT: ${{ inputs.catalog-export }}
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/cdnAssets.mjs"
+          CATALOG="$RUNNER_TEMP/geodata-catalog.txt"
+          npx --yes esbuild "$CATALOG_MODULE" \
+            --bundle --platform=node --format=esm --packages=external \
+            --outfile="$OUT"
+          node --input-type=module -e "
+            import { ${CATALOG_EXPORT} as paths } from 'file://${OUT}'
+            if (!Array.isArray(paths)) {
+              throw new Error('${CATALOG_EXPORT} must be an array of S3 object paths')
+            }
+            for (const p of paths) {
+              if (typeof p !== 'string' || !p.trim()) {
+                throw new Error('catalog entry must be a non-empty string')
+              }
+              if (/^https?:\/\//i.test(p)) {
+                throw new Error('catalog must be bucket/key paths, not URLs: ' + p)
+              }
+              console.log(p)
+            }
+          " > "$CATALOG"
+          echo "catalog-file=$CATALOG" >> "$GITHUB_OUTPUT"
+          echo "Extracted $(wc -l < "$CATALOG") catalog paths from ${CATALOG_MODULE}"
+
+      - name: Resolve catalog file
+        id: catalog
+        run: |
+          if [[ -n "${{ inputs.catalog-file }}" ]]; then
+            echo "catalog-file=${{ inputs.catalog-file }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "catalog-file=${{ steps.extract.outputs.catalog-file }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Relative ./sync-geodata resolves in the *caller* checkout; pin the
+      # composite to the same major tag as this reusable workflow.
+      - name: Sync geodata
+        uses: UCSCGeospatialVisualizationLab/bunny-cdn-actions/sync-geodata@v1
+        with:
+          catalog-file: ${{ steps.catalog.outputs.catalog-file }}
+          check-source-only: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+          verify: ${{ github.event_name != 'pull_request' && inputs.verify && 'true' || 'false' }}
+          cdn-host: ${{ inputs.cdn-host }}
+          dry-run: ${{ inputs.dry-run && 'true' || 'false' }}
+        env:
+          NAUTILUS_ACCESS_KEY_ID: ${{ secrets.NAUTILUS_GEODATA_ACCESS_KEY_ID }}
+          NAUTILUS_SECRET_ACCESS_KEY: ${{ secrets.NAUTILUS_GEODATA_SECRET_ACCESS_KEY }}
+          NAUTILUS_S3_HOST: ${{ vars.NAUTILUS_S3_HOST }}
+          BUNNY_STORAGE_ZONE: ${{ secrets.BUNNY_STORAGE_ZONE }}
+          BUNNY_STORAGE_PASSWORD: ${{ secrets.BUNNY_STORAGE_PASSWORD }}
+          BUNNY_STORAGE_HOST: ${{ vars.BUNNY_STORAGE_HOST }}

@@ -1,0 +1,29 @@
+name: Purge Bunny CDN
+description: Purge stable shell paths on a Bunny pull zone.
+inputs:
+  app-url:
+    description: Site origin URL (e.g. https://app.example.com)
+    required: true
+  paths-file:
+    description: File with one purge path per line
+    required: true
+  dry-run:
+    description: Log purge URLs without calling the API
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Purge CDN cache
+      shell: bash
+      env:
+        BUNNY_CDN_API_KEY: ${{ env.BUNNY_CDN_API_KEY }}
+      run: |
+        EXTRA=()
+        if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+          EXTRA+=(--dry-run)
+        fi
+        node "${{ github.action_path }}/purge.mjs" \
+          --app-url "${{ inputs.app-url }}" \
+          --paths-file "${{ inputs.paths-file }}" \
+          "${EXTRA[@]}"

@@ -1,0 +1,36 @@
+name: Upload to Bunny Storage
+description: Upload a build directory to Bunny Storage (hashed files first).
+inputs:
+  build-dir:
+    description: Local build output directory (e.g. dist or build)
+    required: true
+  hashed-dir:
+    description: Content-hashed subdirectory uploaded first (e.g. assets or static)
+    required: true
+  remote-prefix:
+    description: Optional remote path prefix (preview deploys)
+    required: false
+    default: ''
+  dry-run:
+    description: Log PUTs without uploading
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Upload to Bunny Storage
+      shell: bash
+      env:
+        BUNNY_STORAGE_ZONE: ${{ env.BUNNY_STORAGE_ZONE }}
+        BUNNY_STORAGE_PASSWORD: ${{ env.BUNNY_STORAGE_PASSWORD }}
+        BUNNY_STORAGE_HOST: ${{ env.BUNNY_STORAGE_HOST }}
+      run: |
+        EXTRA=()
+        if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+          EXTRA+=(--dry-run)
+        fi
+        node "${{ github.action_path }}/upload.mjs" \
+          "${{ inputs.build-dir }}" \
+          "${{ inputs.hashed-dir }}" \
+          "${{ inputs.remote-prefix }}" \
+          "${EXTRA[@]}"

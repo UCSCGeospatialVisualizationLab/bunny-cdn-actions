@@ -1,0 +1,81 @@
+name: Sync geodata
+description: Install rclone, copy or check catalog objects from Nautilus to Bunny Storage, optionally verify CDN URLs.
+inputs:
+  catalog-file:
+    description: Path to catalog file (one bucket/key per line)
+    required: true
+  check-source-only:
+    description: Only HEAD-check objects on Nautilus (no copy)
+    required: false
+    default: 'false'
+  verify:
+    description: After copy, smoke-test catalog URLs on the CDN host
+    required: false
+    default: 'false'
+  cdn-host:
+    description: CDN host for verify (e.g. https://app.example.com)
+    required: false
+    default: ''
+  dry-run:
+    description: Pass --dry-run to copy (no writes)
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Install rclone
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v rclone >/dev/null 2>&1; then
+          rclone version
+          exit 0
+        fi
+        curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip
+        unzip -qo /tmp/rclone.zip -d /tmp
+        sudo install -m 755 /tmp/rclone-*-linux-amd64/rclone /usr/local/bin/rclone
+        rclone version
+
+    - name: Check catalog objects exist on Nautilus
+      if: inputs.check-source-only == 'true'
+      shell: bash
+      env:
+        NAUTILUS_ACCESS_KEY_ID: ${{ env.NAUTILUS_ACCESS_KEY_ID }}
+        NAUTILUS_SECRET_ACCESS_KEY: ${{ env.NAUTILUS_SECRET_ACCESS_KEY }}
+        NAUTILUS_S3_HOST: ${{ env.NAUTILUS_S3_HOST }}
+      run: |
+        node "${{ github.action_path }}/copy.mjs" \
+          --catalog-file "${{ inputs.catalog-file }}" \
+          --check-source-only
+
+    - name: Copy catalog objects Nautilus → Bunny Storage
+      if: inputs.check-source-only != 'true'
+      shell: bash
+      env:
+        NAUTILUS_ACCESS_KEY_ID: ${{ env.NAUTILUS_ACCESS_KEY_ID }}
+        NAUTILUS_SECRET_ACCESS_KEY: ${{ env.NAUTILUS_SECRET_ACCESS_KEY }}
+        NAUTILUS_S3_HOST: ${{ env.NAUTILUS_S3_HOST }}
+        BUNNY_STORAGE_ZONE: ${{ env.BUNNY_STORAGE_ZONE }}
+        BUNNY_STORAGE_PASSWORD: ${{ env.BUNNY_STORAGE_PASSWORD }}
+        BUNNY_STORAGE_HOST: ${{ env.BUNNY_STORAGE_HOST }}
+      run: |
+        EXTRA=()
+        if [[ "${{ inputs.dry-run }}" == "true" ]]; then
+          EXTRA+=(--dry-run)
+        fi
+        node "${{ github.action_path }}/copy.mjs" \
+          --catalog-file "${{ inputs.catalog-file }}" \
+          "${EXTRA[@]}"
+
+    - name: Verify catalog URLs on CDN
+      if: inputs.check-source-only != 'true' && inputs.verify == 'true'
+      shell: bash
+      env:
+        CDN_ASSETS_CDN_HOST: ${{ inputs.cdn-host }}
+      run: |
+        if [[ -z "${CDN_ASSETS_CDN_HOST}" ]]; then
+          echo "cdn-host is required when verify=true" >&2
+          exit 1
+        fi
+        node "${{ github.action_path }}/verify.mjs" \
+          --catalog-file "${{ inputs.catalog-file }}"
